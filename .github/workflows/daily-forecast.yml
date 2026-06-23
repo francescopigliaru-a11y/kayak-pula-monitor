@@ -41,6 +41,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          title="Kayak Pula - finestra favorevole per uscita"
+          existing_issue="$(
+            gh issue list \
+              --state open \
+              --json number,title \
+              --jq '.[] | select(.title == "Kayak Pula - finestra favorevole per uscita") | .number' \
+              | head -n 1
+          )"
+
+          if [ -n "$existing_issue" ]; then
+            echo "Open favorable-window issue already exists: #$existing_issue"
+            exit 0
+          fi
+
           gh issue create \
-            --title "Kayak Pula - finestra favorevole per uscita" \
+            --title "$title" \
             --body-file outputs/good_window.md
