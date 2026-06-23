@@ -41,17 +41,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          title="Kayak Pula - finestra favorevole per uscita"
+          today="$(TZ=Europe/Rome date +%F)"
+          title="Kayak Pula - finestra favorevole per uscita - $today"
           existing_issue="$(
             gh issue list \
-              --state open \
+              --state all \
               --json number,title \
-              --jq '.[] | select(.title == "Kayak Pula - finestra favorevole per uscita") | .number' \
+              --jq ".[] | select(.title == \"$title\") | .number" \
               | head -n 1
           )"
 
           if [ -n "$existing_issue" ]; then
-            echo "Open favorable-window issue already exists: #$existing_issue"
+            echo "Favorable-window issue already exists for $today: #$existing_issue"
             exit 0
           fi
 
