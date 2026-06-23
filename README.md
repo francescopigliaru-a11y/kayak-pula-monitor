@@ -73,11 +73,16 @@ Initial alert thresholds:
 - `Hs_nearshore_m <= 0.20`
 - `wind_speed_kmh <= 20`
 - `breaking` is not `true`
+- Only the next `36` hours are considered for alerts.
+- A positive alert requires at least `2` consecutive favorable hours.
 
 The status file contains:
 
-- `GOOD_WINDOW` when at least one future favorable hour exists.
+- `GOOD_WINDOW` when at least one future favorable block exists.
 - `NO_GOOD_WINDOW` when no future favorable hour exists.
+
+The workflow does not create duplicate open issues with the same favorable-window
+title.
 
 ## Output table
 
