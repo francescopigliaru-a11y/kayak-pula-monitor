@@ -59,8 +59,8 @@ python forecast_monitor.py
 ```
 
 and uploads the `outputs/` directory as an artifact. If
-`outputs/good_window.md` exists, the workflow creates a GitHub Issue titled
-`Kayak Pula - finestra favorevole per uscita` using that file as the body.
+`outputs/good_window.md` exists, the workflow creates one GitHub Issue per day
+using the good-window report as the body.
 
 The issue is deliberately cautious: it reports conditions favorable to verify,
 not a guarantee that going out is safe. Always check local conditions, real wind,
@@ -81,8 +81,8 @@ The status file contains:
 - `GOOD_WINDOW` when at least one future favorable block exists.
 - `NO_GOOD_WINDOW` when no future favorable hour exists.
 
-The workflow does not create duplicate open issues with the same favorable-window
-title.
+The workflow does not create duplicate favorable-window issues for the same
+calendar day, even if the workflow is launched manually more than once.
 
 ## Output table
 
