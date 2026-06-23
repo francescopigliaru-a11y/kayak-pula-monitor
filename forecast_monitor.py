@@ -35,6 +35,8 @@ GOOD_WINDOW_STATUS_PATH = OUTPUT_DIR / "good_window_status.txt"
 
 GOOD_HS_THRESHOLD_M = 0.20
 GOOD_WIND_THRESHOLD_KMH = 20.0
+GOOD_WINDOW_LOOKAHEAD_HOURS = 36
+MIN_CONSECUTIVE_GOOD_HOURS = 2
 MAX_GOOD_ROWS_IN_REPORT = 12
 
 OUTPUT_COLUMNS = [
@@ -253,10 +255,19 @@ def upcoming_rows(rows: list[dict[str, Any]], limit: int = 12) -> list[dict[str,
     return (future_rows or rows)[:limit]
 
 
-def future_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def future_rows(rows: list[dict[str, Any]], hours: int | None = None) -> list[dict[str, Any]]:
     """Return forecast rows that are not already in the past."""
     now = datetime.now(LOCAL_TZ)
-    return [row for row in rows if (parse_time(row["time"]) or now) >= now]
+    cutoff = None if hours is None else now + timedelta(hours=hours)
+    selected = []
+    for row in rows:
+        row_time = parse_time(row["time"]) or now
+        if row_time < now:
+            continue
+        if cutoff is not None and row_time > cutoff:
+            continue
+        selected.append(row)
+    return selected
 
 
 def is_good_kayak_window(row: dict[str, Any]) -> bool:
@@ -274,7 +285,8 @@ def is_good_kayak_window(row: dict[str, Any]) -> bool:
 
 def good_kayak_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Select future rows that satisfy the favorable kayak thresholds."""
-    return [row for row in future_rows(rows) if is_good_kayak_window(row)]
+    candidates = future_rows(rows, hours=GOOD_WINDOW_LOOKAHEAD_HOURS)
+    return [row for row in candidates if is_good_kayak_window(row)]
 
 
 def group_consecutive_rows(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -301,21 +313,23 @@ def group_consecutive_rows(rows: list[dict[str, Any]]) -> list[list[dict[str, An
     return groups
 
 
-def window_score(group: list[dict[str, Any]]) -> tuple[int, float, float, str]:
-    """Rank windows by duration first, then calmer average sea and wind."""
-    hs_values = [row["Hs_nearshore_m"] for row in group if row["Hs_nearshore_m"] is not None]
-    wind_values = [row["wind_speed_kmh"] for row in group if row["wind_speed_kmh"] is not None]
-    avg_hs = sum(hs_values) / len(hs_values) if hs_values else 99.0
-    avg_wind = sum(wind_values) / len(wind_values) if wind_values else 99.0
-    return (-len(group), avg_hs, avg_wind, group[0]["time"])
-
-
 def best_good_window(good_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pick the recommended favorable window."""
+    """Pick the first favorable window with enough consecutive hours."""
     groups = group_consecutive_rows(good_rows)
-    if not groups:
-        return []
-    return min(groups, key=window_score)
+    for group in groups:
+        if len(group) >= MIN_CONSECUTIVE_GOOD_HOURS:
+            return group
+    return []
+
+
+def qualified_good_rows(good_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return favorable rows that belong to sufficiently long windows."""
+    groups = group_consecutive_rows(good_rows)
+    rows: list[dict[str, Any]] = []
+    for group in groups:
+        if len(group) >= MIN_CONSECUTIVE_GOOD_HOURS:
+            rows.extend(group)
+    return rows
 
 
 def window_label(group: list[dict[str, Any]]) -> str:
@@ -353,15 +367,16 @@ def write_good_window_outputs(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     """Write positive kayak alert files and return favorable rows."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     good_rows = good_kayak_rows(rows)
+    best_window = best_good_window(good_rows)
+    qualified_rows = qualified_good_rows(good_rows)
 
-    if not good_rows:
+    if not best_window:
         GOOD_WINDOW_STATUS_PATH.write_text("NO_GOOD_WINDOW\n", encoding="utf-8")
         if GOOD_WINDOW_PATH.exists():
             GOOD_WINDOW_PATH.unlink()
         return []
 
-    best_window = best_good_window(good_rows)
-    report_rows = good_rows[:MAX_GOOD_ROWS_IN_REPORT]
+    report_rows = qualified_rows[:MAX_GOOD_ROWS_IN_REPORT]
     lines = [
         "# Possibile finestra per kayak",
         "",
@@ -369,21 +384,22 @@ def write_good_window_outputs(rows: list[dict[str, Any]]) -> list[dict[str, Any]
         "",
         "Condizioni favorevoli da verificare per uscita in kayak",
         "",
-        f"- Ore favorevoli trovate: {len(good_rows)}",
+        f"- Ore favorevoli trovate nelle prossime {GOOD_WINDOW_LOOKAHEAD_HOURS} ore: {len(qualified_rows)}",
         f"- Migliore fascia oraria consigliata: {window_label(best_window)}",
         f"- Soglie: Hs_nearshore_m <= {GOOD_HS_THRESHOLD_M:.2f} m, wind_speed_kmh <= {GOOD_WIND_THRESHOLD_KMH:.0f}, breaking non true",
+        f"- Richiesta minima: almeno {MIN_CONSECUTIVE_GOOD_HOURS} ore consecutive.",
         "- Controllare sempre condizioni locali, vento reale, correnti e capacità personali.",
         "",
         "## Ore favorevoli",
         "",
     ]
     lines.extend(markdown_rows(report_rows))
-    if len(good_rows) > len(report_rows):
-        lines.extend(["", f"_Mostrate le prime {len(report_rows)} di {len(good_rows)} ore favorevoli._"])
+    if len(qualified_rows) > len(report_rows):
+        lines.extend(["", f"_Mostrate le prime {len(report_rows)} di {len(qualified_rows)} ore favorevoli._"])
 
     GOOD_WINDOW_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     GOOD_WINDOW_STATUS_PATH.write_text("GOOD_WINDOW\n", encoding="utf-8")
-    return good_rows
+    return qualified_rows
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -414,7 +430,8 @@ def write_markdown(rows: list[dict[str, Any]]) -> None:
     max_row = summary["max_row"]
     good_rows = good_kayak_rows(rows)
     best_window = best_good_window(good_rows)
-    report_good_rows = good_rows[:MAX_GOOD_ROWS_IN_REPORT]
+    qualified_rows = qualified_good_rows(good_rows)
+    report_good_rows = qualified_rows[:MAX_GOOD_ROWS_IN_REPORT]
 
     lines = [
         "# Kayak Pula nearshore forecast",
@@ -457,20 +474,21 @@ def write_markdown(rows: list[dict[str, Any]]) -> None:
         ]
     )
 
-    if good_rows:
+    if best_window:
         lines.extend(
             [
                 "Condizioni favorevoli da verificare per uscita in kayak.",
                 "",
                 f"- Migliore fascia oraria consigliata: {window_label(best_window)}",
-                f"- Ore favorevoli trovate: {len(good_rows)}",
+                f"- Ore favorevoli trovate nelle prossime {GOOD_WINDOW_LOOKAHEAD_HOURS} ore: {len(qualified_rows)}",
+                f"- Richiesta minima: almeno {MIN_CONSECUTIVE_GOOD_HOURS} ore consecutive.",
                 "- Controllare sempre condizioni locali, vento reale, correnti e capacità personali.",
                 "",
             ]
         )
         lines.extend(markdown_rows(report_good_rows))
-        if len(good_rows) > len(report_good_rows):
-            lines.extend(["", f"_Mostrate le prime {len(report_good_rows)} di {len(good_rows)} ore favorevoli._"])
+        if len(qualified_rows) > len(report_good_rows):
+            lines.extend(["", f"_Mostrate le prime {len(report_good_rows)} di {len(qualified_rows)} ore favorevoli._"])
     else:
         lines.append("Nessuna finestra consigliata secondo le soglie impostate.")
 
