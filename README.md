@@ -50,9 +50,10 @@ temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m
 
 ## GitHub Actions
 
-The workflow `.github/workflows/daily-forecast.yml` runs daily and can also be
-started manually with `workflow_dispatch`. It installs Python, installs
-`requirements.txt`, runs:
+The workflow `.github/workflows/daily-forecast.yml` runs three scheduled checks
+per day and can also be started manually with `workflow_dispatch`. Multiple
+scheduled attempts make the monitor more robust if GitHub delays or drops one
+scheduled run. It installs Python, installs `requirements.txt`, runs:
 
 ```bash
 python forecast_monitor.py
@@ -82,7 +83,8 @@ The status file contains:
 - `NO_GOOD_WINDOW` when no future favorable hour exists.
 
 The workflow does not create duplicate favorable-window issues for the same
-calendar day, even if the workflow is launched manually more than once.
+calendar day, even if more than one scheduled attempt succeeds or the workflow is
+launched manually more than once.
 
 ## Output table
 
