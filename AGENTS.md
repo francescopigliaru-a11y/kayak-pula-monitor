@@ -18,7 +18,7 @@ Operational rules for agents:
   favorable to verify" and never state that an outing is surely safe.
 - Positive kayak alerts only consider the next 36 hours and require at least two
   consecutive favorable hours.
-- The GitHub Actions workflow should use multiple scheduled attempts per day for
+- The GitHub Actions workflow should use hourly scheduled attempts for
   reliability, but create at most one favorable-window issue per calendar day.
 - Before changing the GitHub Actions schedule or model parameters, explain the
   reason in the change summary.
