@@ -1,0 +1,61 @@
+name: Kayak Pula Forecast Scheduler
+
+"on":
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run forecast monitor
+        run: python forecast_monitor.py
+
+      - name: Upload forecast outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kayak-pula-forecast
+          path: outputs/
+          if-no-files-found: warn
+
+      - name: Create favorable-window issue
+        if: ${{ hashFiles('outputs/good_window.md') != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          today="$(TZ=Europe/Rome date +%F)"
+          title="Kayak Pula - finestra favorevole per uscita - $today"
+          existing_issue="$(
+            gh issue list \
+              --state all \
+              --json number,title \
+              --jq ".[] | select(.title == \"$title\") | .number" \
+              | head -n 1
+          )"
+
+          if [ -n "$existing_issue" ]; then
+            echo "Favorable-window issue already exists for $today: #$existing_issue"
+            exit 0
+          fi
+
+          gh issue create \
+            --title "$title" \
+            --body-file outputs/good_window.md
