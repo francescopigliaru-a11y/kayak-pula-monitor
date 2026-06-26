@@ -1,8 +1,6 @@
 name: Daily Kayak Pula Forecast
 
 "on":
-  schedule:
-    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions:
