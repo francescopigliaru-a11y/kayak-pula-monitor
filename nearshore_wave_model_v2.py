@@ -3,8 +3,8 @@
 import math
 
 
-def nearshore_wave(Hs_off, Tp, Dir_off, bearing=65, depth=3.5, wind_speed=0):
-    """Estimate nearshore significant wave height from offshore conditions.
+def nearshore_wave_details(Hs_off, Tp, Dir_off, bearing=65, depth=3.5, wind_speed=0):
+    """Return the Kayak Pula v2 result and its intermediate components.
 
     The formula is the Kayak Pula v2 model supplied for this project. The only
     defensive additions are input checks for missing or non-physical values so
@@ -36,5 +36,27 @@ def nearshore_wave(Hs_off, Tp, Dir_off, bearing=65, depth=3.5, wind_speed=0):
     H_break = 0.78 * depth
     Hs_coastal = min(Hs_pred, H_break)
     H_wind = 0.016 * (wind_speed**2 / g)
-    Hs_final = math.sqrt(Hs_coastal**2 + H_wind**2)
-    return round(max(Hs_final, 0.05), 2)
+    Hs_raw = math.sqrt(Hs_coastal**2 + H_wind**2)
+    Hs_final = round(max(Hs_raw, 0.05), 2)
+    return {
+        "theta_off_deg": math.degrees(theta_off),
+        "Ks": Ks,
+        "Kr": Kr,
+        "atten": atten,
+        "angle_factor": angle_factor,
+        "Hs_pred_m": Hs_pred,
+        "H_break_m": H_break,
+        "Hs_coastal_m": Hs_coastal,
+        "H_wind_m": H_wind,
+        "Hs_raw_m": Hs_raw,
+        "floor_applied": Hs_raw < 0.05,
+        "Hs_final_m": Hs_final,
+    }
+
+
+def nearshore_wave(Hs_off, Tp, Dir_off, bearing=65, depth=3.5, wind_speed=0):
+    """Estimate nearshore significant wave height from offshore conditions."""
+    details = nearshore_wave_details(Hs_off, Tp, Dir_off, bearing, depth, wind_speed)
+    if details is None:
+        return None
+    return details["Hs_final_m"]
