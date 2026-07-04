@@ -28,8 +28,10 @@ python -m pip install -r requirements.txt
 python forecast_monitor.py
 ```
 
-The script prints a compact summary for the next hours and updates the files in
-`outputs/`.
+The script prints a compact summary and updates the files in `outputs/`. Every
+report covers exactly `36` hourly rows, starting at `08:00` Europe/Rome on the
+day after the monitor runs. For example, a run at 18:00 on July 3 covers July 4
+at 08:00 through July 5 at 19:00.
 
 ## Data sources
 
@@ -50,10 +52,10 @@ temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m
 
 ## GitHub Actions
 
-The workflow `.github/workflows/daily-forecast.yml` runs an hourly scheduled
-check and can also be started manually with `workflow_dispatch`. Hourly attempts
-make the monitor more robust if GitHub delays or drops individual scheduled
-runs. It installs Python, installs `requirements.txt`, runs:
+The workflow `.github/workflows/daily-forecast.yml` is started with
+`workflow_dispatch` by the external cron-job.org trigger at 18:00 Europe/Rome.
+This avoids relying on GitHub's delayed scheduled queue. It installs Python,
+installs `requirements.txt`, runs:
 
 ```bash
 python forecast_monitor.py
@@ -74,7 +76,8 @@ Initial alert thresholds:
 - `Hs_nearshore_m <= 0.20`
 - `wind_speed_kmh <= 20`
 - `breaking` is not `true`
-- Only the next `36` hours are considered for alerts.
+- Alerts consider the `36` hours beginning at `08:00` Europe/Rome on the day
+  after the monitor runs.
 - A positive alert requires at least `2` consecutive favorable hours.
 
 The status file contains:
