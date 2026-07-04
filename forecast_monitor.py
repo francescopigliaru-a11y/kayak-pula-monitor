@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,7 +14,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from nearshore_wave_model_v2 import nearshore_wave
+from nearshore_wave_model_v2 import nearshore_wave_details
 
 
 LAT = 38.930
@@ -32,6 +33,8 @@ CSV_PATH = OUTPUT_DIR / "latest_forecast.csv"
 REPORT_PATH = OUTPUT_DIR / "latest_forecast.md"
 GOOD_WINDOW_PATH = OUTPUT_DIR / "good_window.md"
 GOOD_WINDOW_STATUS_PATH = OUTPUT_DIR / "good_window_status.txt"
+MODEL_AUDIT_CSV_PATH = OUTPUT_DIR / "model_audit.csv"
+MODEL_AUDIT_PATH = OUTPUT_DIR / "model_audit.md"
 
 GOOD_HS_THRESHOLD_M = 0.20
 GOOD_WIND_THRESHOLD_KMH = 20.0
@@ -42,13 +45,35 @@ MAX_GOOD_ROWS_IN_REPORT = 12
 
 OUTPUT_COLUMNS = [
     "time",
+    "Hs_offshore_API_m",
     "Hs_nearshore_m",
+    "Hs_model_raw_m",
+    "model_floor_applied",
     "Tp_s",
     "Dir",
+    "Dir_API_deg",
     "breaking",
     "temperature_C",
     "wind_speed_kmh",
     "wind_dir",
+]
+
+MODEL_AUDIT_COLUMNS = [
+    "time",
+    "Hs_offshore_API_m",
+    "Tp_API_s",
+    "Dir_API_deg",
+    "Dir_API",
+    "theta_off_deg",
+    "Ks",
+    "Kr",
+    "atten",
+    "angle_factor",
+    "Hs_pred_m",
+    "H_wind_m",
+    "Hs_model_raw_m",
+    "Hs_nearshore_display_m",
+    "model_floor_applied",
 ]
 
 
@@ -185,7 +210,7 @@ def build_rows(marine_data: dict[str, Any], weather_data: dict[str, Any]) -> lis
         wind_speed_kmh = safe_float(weather.get("wind_speed_10m"))
         wind_speed_ms = None if wind_speed_kmh is None else wind_speed_kmh / 3.6
 
-        hs_nearshore = nearshore_wave(
+        model = nearshore_wave_details(
             hs_off,
             tp,
             wave_dir_deg,
@@ -193,6 +218,7 @@ def build_rows(marine_data: dict[str, Any], weather_data: dict[str, Any]) -> lis
             depth=LOCAL_DEPTH_M,
             wind_speed=wind_speed_ms or 0,
         )
+        hs_nearshore = None if model is None else model["Hs_final_m"]
 
         wind_dir_deg = safe_float(weather.get("wind_direction_10m"))
         temperature = safe_float(weather.get("temperature_2m"))
@@ -208,6 +234,7 @@ def build_rows(marine_data: dict[str, Any], weather_data: dict[str, Any]) -> lis
                 "temperature_C": temperature,
                 "wind_speed_kmh": wind_speed_kmh,
                 "wind_dir": cardinal_direction(wind_dir_deg),
+                "_model": model,
                 "_wave_height_offshore_m": hs_off,
                 "_wave_direction_deg": wave_dir_deg,
                 "_wind_gusts_kmh": safe_float(weather.get("wind_gusts_10m")),
@@ -227,15 +254,148 @@ def write_csv(rows: list[dict[str, Any]]) -> None:
             writer.writerow(
                 {
                     "time": row["time"],
+                    "Hs_offshore_API_m": fmt_number(row["_wave_height_offshore_m"]),
                     "Hs_nearshore_m": fmt_number(row["Hs_nearshore_m"]),
+                    "Hs_model_raw_m": fmt_number((row["_model"] or {}).get("Hs_raw_m"), 4),
+                    "model_floor_applied": str(bool((row["_model"] or {}).get("floor_applied"))).lower(),
                     "Tp_s": fmt_number(row["Tp_s"], 1),
                     "Dir": row["Dir"],
+                    "Dir_API_deg": fmt_number(row["_wave_direction_deg"], 0),
                     "breaking": row["breaking"],
                     "temperature_C": fmt_number(row["temperature_C"], 1),
                     "wind_speed_kmh": fmt_number(row["wind_speed_kmh"], 1),
                     "wind_dir": row["wind_dir"],
                 }
             )
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return great-circle distance between two coordinates."""
+    radius_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+    value = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lon / 2) ** 2
+    )
+    return radius_km * 2 * math.asin(math.sqrt(value))
+
+
+def audit_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize the raw API wave and the unchanged model transformation."""
+    offshore = [row["_wave_height_offshore_m"] for row in rows if row["_wave_height_offshore_m"] is not None]
+    raw_model = [
+        row["_model"]["Hs_raw_m"]
+        for row in rows
+        if row.get("_model") is not None
+    ]
+    displayed = [row["Hs_nearshore_m"] for row in rows if row["Hs_nearshore_m"] is not None]
+    floor_hits = sum(bool((row.get("_model") or {}).get("floor_applied")) for row in rows)
+    return {
+        "offshore_min": min(offshore) if offshore else None,
+        "offshore_max": max(offshore) if offshore else None,
+        "raw_min": min(raw_model) if raw_model else None,
+        "raw_max": max(raw_model) if raw_model else None,
+        "displayed_min": min(displayed) if displayed else None,
+        "displayed_max": max(displayed) if displayed else None,
+        "floor_hits": floor_hits,
+        "row_count": len(rows),
+    }
+
+
+def write_model_audit(
+    rows: list[dict[str, Any]],
+    marine_data: dict[str, Any],
+    run_time: datetime,
+    window_start: datetime,
+    window_end: datetime,
+) -> None:
+    """Write detailed API-to-nearshore model diagnostics."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    summary = audit_summary(rows)
+    grid_lat = safe_float(marine_data.get("latitude"))
+    grid_lon = safe_float(marine_data.get("longitude"))
+    grid_distance = None
+    if grid_lat is not None and grid_lon is not None:
+        grid_distance = haversine_km(LAT, LON, grid_lat, grid_lon)
+
+    with MODEL_AUDIT_CSV_PATH.open("w", newline="", encoding="utf-8") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=MODEL_AUDIT_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            model = row.get("_model") or {}
+            writer.writerow(
+                {
+                    "time": row["time"],
+                    "Hs_offshore_API_m": fmt_number(row["_wave_height_offshore_m"]),
+                    "Tp_API_s": fmt_number(row["Tp_s"], 1),
+                    "Dir_API_deg": fmt_number(row["_wave_direction_deg"], 0),
+                    "Dir_API": row["Dir"],
+                    "theta_off_deg": fmt_number(model.get("theta_off_deg"), 1),
+                    "Ks": fmt_number(model.get("Ks"), 3),
+                    "Kr": fmt_number(model.get("Kr"), 3),
+                    "atten": fmt_number(model.get("atten"), 4),
+                    "angle_factor": fmt_number(model.get("angle_factor"), 3),
+                    "Hs_pred_m": fmt_number(model.get("Hs_pred_m"), 4),
+                    "H_wind_m": fmt_number(model.get("H_wind_m"), 4),
+                    "Hs_model_raw_m": fmt_number(model.get("Hs_raw_m"), 4),
+                    "Hs_nearshore_display_m": fmt_number(row["Hs_nearshore_m"]),
+                    "model_floor_applied": str(bool(model.get("floor_applied"))).lower(),
+                }
+            )
+
+    lines = [
+        "# Kayak Pula model audit",
+        "",
+        f"Generated: {run_time.isoformat(timespec='seconds')}",
+        f"Forecast window: {forecast_window_label(window_start, window_end)}",
+        "",
+        "## API source",
+        "",
+        f"- Requested coordinate: {LAT}, {LON}",
+    ]
+    if grid_lat is not None and grid_lon is not None:
+        lines.append(f"- Marine grid coordinate returned by Open-Meteo: {grid_lat}, {grid_lon}")
+    if grid_distance is not None:
+        lines.append(f"- Approximate distance from requested point: {grid_distance:.1f} km")
+    lines.extend(
+        [
+            "- Wave direction is the direction waves come from.",
+            "",
+            "## Transformation summary",
+            "",
+            f"- Offshore API Hs range: {fmt_number(summary['offshore_min'])}-{fmt_number(summary['offshore_max'])} m",
+            f"- Model raw Hs range before the 0.05 m floor: {fmt_number(summary['raw_min'], 4)}-{fmt_number(summary['raw_max'], 4)} m",
+            f"- Displayed nearshore Hs range: {fmt_number(summary['displayed_min'])}-{fmt_number(summary['displayed_max'])} m",
+            f"- 0.05 m display floor applied: {summary['floor_hits']}/{summary['row_count']} hours",
+            "",
+            "The 0.05 m value is a display floor when `model_floor_applied=true`; it is not an API observation of a 5 cm wave.",
+            "",
+            "## First 12 hourly diagnostics",
+            "",
+            "| time | Hs_API_m | Dir_API_deg | Tp_s | theta_deg | atten | angle_factor | Hs_model_raw_m | Hs_display_m | floor |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for row in rows[:12]:
+        model = row.get("_model") or {}
+        lines.append(
+            "| {time} | {api} | {direction} | {tp} | {theta} | {atten} | {angle} | {raw} | {displayed} | {floor} |".format(
+                time=row["time"],
+                api=fmt_number(row["_wave_height_offshore_m"]),
+                direction=fmt_number(row["_wave_direction_deg"], 0),
+                tp=fmt_number(row["Tp_s"], 1),
+                theta=fmt_number(model.get("theta_off_deg"), 1),
+                atten=fmt_number(model.get("atten"), 4),
+                angle=fmt_number(model.get("angle_factor"), 3),
+                raw=fmt_number(model.get("Hs_raw_m"), 4),
+                displayed=fmt_number(row["Hs_nearshore_m"]),
+                floor=str(bool(model.get("floor_applied"))).lower(),
+            )
+        )
+    MODEL_AUDIT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def parse_time(timestamp: str) -> datetime | None:
@@ -395,6 +555,7 @@ def write_good_window_outputs(
     good_rows = good_kayak_rows(rows)
     best_window = best_good_window(good_rows)
     qualified_rows = qualified_good_rows(good_rows)
+    model_audit = audit_summary(rows)
 
     if not best_window:
         GOOD_WINDOW_STATUS_PATH.write_text("NO_GOOD_WINDOW\n", encoding="utf-8")
@@ -413,9 +574,12 @@ def write_good_window_outputs(
         f"- Intervallo analizzato: {forecast_window_label(window_start, window_end)}",
         f"- Ore favorevoli trovate nell'intervallo: {len(qualified_rows)}",
         f"- Migliore fascia oraria consigliata: {window_label(best_window)}",
+        f"- Onda offshore Open-Meteo nell'intervallo: {fmt_number(model_audit['offshore_min'])}-{fmt_number(model_audit['offshore_max'])} m",
+        f"- Limite minimo 0.05 m applicato dal modello: {model_audit['floor_hits']}/{model_audit['row_count']} ore",
         f"- Soglie: Hs_nearshore_m <= {GOOD_HS_THRESHOLD_M:.2f} m, wind_speed_kmh <= {GOOD_WIND_THRESHOLD_KMH:.0f}, breaking non true",
         f"- Richiesta minima: almeno {MIN_CONSECUTIVE_GOOD_HOURS} ore consecutive.",
         "- Controllare sempre condizioni locali, vento reale, correnti e capacità personali.",
+        "- Il valore 0.05 m puo essere il minimo visualizzato dal modello, non una misura diretta dell'onda.",
         "",
         "## Ore favorevoli",
         "",
@@ -459,6 +623,7 @@ def write_markdown(
     """Write a Markdown report with the required forecast table."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary = summarize(rows)
+    model_audit = audit_summary(rows)
     max_row = summary["max_row"]
     good_rows = good_kayak_rows(rows)
     best_window = best_good_window(good_rows)
@@ -484,6 +649,9 @@ def write_markdown(
         f"- Forecast window: {forecast_window_label(window_start, window_end)}",
         f"- Forecast rows: {summary['count']}",
         f"- Rows with nearshore estimate: {summary['valid_count']}",
+        f"- Offshore Open-Meteo Hs range: {fmt_number(model_audit['offshore_min'])}-{fmt_number(model_audit['offshore_max'])} m",
+        f"- Raw model Hs range before display floor: {fmt_number(model_audit['raw_min'], 4)}-{fmt_number(model_audit['raw_max'], 4)} m",
+        f"- 0.05 m display floor applied: {model_audit['floor_hits']}/{model_audit['row_count']} hours",
     ]
 
     if max_row:
@@ -579,11 +747,13 @@ def main() -> int:
                 f"{forecast_window_label(window_start, window_end)}"
             )
         write_csv(rows)
+        write_model_audit(rows, marine_data, run_time, window_start, window_end)
         good_rows = write_good_window_outputs(rows, run_time, window_start, window_end)
         write_markdown(rows, run_time, window_start, window_end)
         print_console_summary(rows, window_start, window_end)
         print(f"\nKayak favorable windows: {len(good_rows)}")
         print(f"Status file: {GOOD_WINDOW_STATUS_PATH}")
+        print(f"Model audit: {MODEL_AUDIT_PATH}")
         if good_rows:
             print(f"Good-window report: {GOOD_WINDOW_PATH}")
     except Exception as exc:
