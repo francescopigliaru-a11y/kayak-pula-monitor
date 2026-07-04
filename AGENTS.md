@@ -14,6 +14,10 @@ Operational rules for agents:
   - `outputs/latest_forecast.md`
   - `outputs/good_window_status.txt`
   - `outputs/good_window.md` when favorable kayak windows exist
+  - `outputs/model_audit.csv`
+  - `outputs/model_audit.md`
+- Preserve raw Open-Meteo wave values and model diagnostics in the audit
+  outputs. Never present the `0.05 m` model floor as a direct observation.
 - Positive kayak alerts must stay cautious. Use language such as "conditions
   favorable to verify" and never state that an outing is surely safe.
 - Positive kayak alerts only consider the 36-hour window beginning at 08:00
