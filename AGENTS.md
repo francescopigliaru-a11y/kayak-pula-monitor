@@ -16,10 +16,11 @@ Operational rules for agents:
   - `outputs/good_window.md` when favorable kayak windows exist
 - Positive kayak alerts must stay cautious. Use language such as "conditions
   favorable to verify" and never state that an outing is surely safe.
-- Positive kayak alerts only consider the next 36 hours and require at least two
+- Positive kayak alerts only consider the 36-hour window beginning at 08:00
+  Europe/Rome on the day after the monitor runs, and require at least two
   consecutive favorable hours.
-- The GitHub Actions workflow should use hourly scheduled attempts for
-  reliability, but create at most one favorable-window issue per calendar day.
+- The GitHub Actions workflow is triggered externally with `workflow_dispatch`
+  at 18:00 Europe/Rome and creates at most one favorable-window issue per day.
 - Before changing the GitHub Actions schedule or model parameters, explain the
   reason in the change summary.
 - Treat the forecast as informational. Do not present it as navigation-grade or
