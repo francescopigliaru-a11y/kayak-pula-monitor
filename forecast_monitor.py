@@ -35,7 +35,8 @@ GOOD_WINDOW_STATUS_PATH = OUTPUT_DIR / "good_window_status.txt"
 
 GOOD_HS_THRESHOLD_M = 0.20
 GOOD_WIND_THRESHOLD_KMH = 20.0
-GOOD_WINDOW_LOOKAHEAD_HOURS = 36
+FORECAST_START_HOUR = 8
+FORECAST_WINDOW_HOURS = 36
 MIN_CONSECUTIVE_GOOD_HOURS = 2
 MAX_GOOD_ROWS_IN_REPORT = 12
 
@@ -248,26 +249,47 @@ def parse_time(timestamp: str) -> datetime | None:
     return parsed
 
 
-def upcoming_rows(rows: list[dict[str, Any]], limit: int = 12) -> list[dict[str, Any]]:
-    """Return the next forecast rows from the current local time."""
-    now = datetime.now(LOCAL_TZ)
-    future_rows = [row for row in rows if (parse_time(row["time"]) or now) >= now]
-    return (future_rows or rows)[:limit]
+def forecast_window_bounds(run_time: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return the 36-hour window starting at 08:00 on the following day."""
+    current = run_time or datetime.now(LOCAL_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=LOCAL_TZ)
+    else:
+        current = current.astimezone(LOCAL_TZ)
+
+    next_day = current.date() + timedelta(days=1)
+    start = datetime(
+        next_day.year,
+        next_day.month,
+        next_day.day,
+        FORECAST_START_HOUR,
+        tzinfo=LOCAL_TZ,
+    )
+    return start, start + timedelta(hours=FORECAST_WINDOW_HOURS)
 
 
-def future_rows(rows: list[dict[str, Any]], hours: int | None = None) -> list[dict[str, Any]]:
-    """Return forecast rows that are not already in the past."""
-    now = datetime.now(LOCAL_TZ)
-    cutoff = None if hours is None else now + timedelta(hours=hours)
-    selected = []
+def rows_in_forecast_window(
+    rows: list[dict[str, Any]],
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """Select rows in the configured window, with the end excluded."""
+    selected: list[dict[str, Any]] = []
     for row in rows:
-        row_time = parse_time(row["time"]) or now
-        if row_time < now:
-            continue
-        if cutoff is not None and row_time > cutoff:
+        row_time = parse_time(row["time"])
+        if row_time is None or row_time < start or row_time >= end:
             continue
         selected.append(row)
     return selected
+
+
+def forecast_window_label(start: datetime, end: datetime) -> str:
+    """Describe the hourly interval using its first and last included rows."""
+    last_hour = end - timedelta(hours=1)
+    return (
+        f"{start.isoformat(timespec='minutes')} - "
+        f"{last_hour.isoformat(timespec='minutes')} ({FORECAST_WINDOW_HOURS} ore)"
+    )
 
 
 def is_good_kayak_window(row: dict[str, Any]) -> bool:
@@ -284,9 +306,8 @@ def is_good_kayak_window(row: dict[str, Any]) -> bool:
 
 
 def good_kayak_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Select future rows that satisfy the favorable kayak thresholds."""
-    candidates = future_rows(rows, hours=GOOD_WINDOW_LOOKAHEAD_HOURS)
-    return [row for row in candidates if is_good_kayak_window(row)]
+    """Select forecast-window rows that satisfy the kayak thresholds."""
+    return [row for row in rows if is_good_kayak_window(row)]
 
 
 def group_consecutive_rows(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -363,7 +384,12 @@ def markdown_rows(rows: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def write_good_window_outputs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def write_good_window_outputs(
+    rows: list[dict[str, Any]],
+    run_time: datetime,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict[str, Any]]:
     """Write positive kayak alert files and return favorable rows."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     good_rows = good_kayak_rows(rows)
@@ -380,11 +406,12 @@ def write_good_window_outputs(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     lines = [
         "# Possibile finestra per kayak",
         "",
-        f"Controllo: {datetime.now(LOCAL_TZ).isoformat(timespec='seconds')}",
+        f"Controllo: {run_time.isoformat(timespec='seconds')}",
         "",
         "Condizioni favorevoli da verificare per uscita in kayak",
         "",
-        f"- Ore favorevoli trovate nelle prossime {GOOD_WINDOW_LOOKAHEAD_HOURS} ore: {len(qualified_rows)}",
+        f"- Intervallo analizzato: {forecast_window_label(window_start, window_end)}",
+        f"- Ore favorevoli trovate nell'intervallo: {len(qualified_rows)}",
         f"- Migliore fascia oraria consigliata: {window_label(best_window)}",
         f"- Soglie: Hs_nearshore_m <= {GOOD_HS_THRESHOLD_M:.2f} m, wind_speed_kmh <= {GOOD_WIND_THRESHOLD_KMH:.0f}, breaking non true",
         f"- Richiesta minima: almeno {MIN_CONSECUTIVE_GOOD_HOURS} ore consecutive.",
@@ -423,7 +450,12 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def write_markdown(rows: list[dict[str, Any]]) -> None:
+def write_markdown(
+    rows: list[dict[str, Any]],
+    run_time: datetime,
+    window_start: datetime,
+    window_end: datetime,
+) -> None:
     """Write a Markdown report with the required forecast table."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary = summarize(rows)
@@ -436,7 +468,7 @@ def write_markdown(rows: list[dict[str, Any]]) -> None:
     lines = [
         "# Kayak Pula nearshore forecast",
         "",
-        f"Generated: {datetime.now(LOCAL_TZ).isoformat(timespec='seconds')}",
+        f"Generated: {run_time.isoformat(timespec='seconds')}",
         "",
         "## Site parameters",
         "",
@@ -449,6 +481,7 @@ def write_markdown(rows: list[dict[str, Any]]) -> None:
         "",
         "## Summary",
         "",
+        f"- Forecast window: {forecast_window_label(window_start, window_end)}",
         f"- Forecast rows: {summary['count']}",
         f"- Rows with nearshore estimate: {summary['valid_count']}",
     ]
@@ -480,7 +513,7 @@ def write_markdown(rows: list[dict[str, Any]]) -> None:
                 "Condizioni favorevoli da verificare per uscita in kayak.",
                 "",
                 f"- Migliore fascia oraria consigliata: {window_label(best_window)}",
-                f"- Ore favorevoli trovate nelle prossime {GOOD_WINDOW_LOOKAHEAD_HOURS} ore: {len(qualified_rows)}",
+                f"- Ore favorevoli trovate nell'intervallo: {len(qualified_rows)}",
                 f"- Richiesta minima: almeno {MIN_CONSECUTIVE_GOOD_HOURS} ore consecutive.",
                 "- Controllare sempre condizioni locali, vento reale, correnti e capacità personali.",
                 "",
@@ -504,18 +537,23 @@ def write_markdown(rows: list[dict[str, Any]]) -> None:
     REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def print_console_summary(rows: list[dict[str, Any]]) -> None:
+def print_console_summary(
+    rows: list[dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> None:
     """Print a short terminal summary for the current run."""
     summary = summarize(rows)
     max_row = summary["max_row"]
 
     print("Kayak Pula forecast monitor")
+    print(f"Forecast window: {forecast_window_label(window_start, window_end)}")
     print(f"Rows: {summary['valid_count']}/{summary['count']} with nearshore estimates")
     if max_row:
         print(f"Max Hs nearshore: {fmt_number(max_row['Hs_nearshore_m'])} m at {max_row['time']}")
 
-    print("\nNext hours:")
-    for row in upcoming_rows(rows, limit=8):
+    print("\nFirst forecast hours:")
+    for row in rows[:8]:
         hs = fmt_number(row["Hs_nearshore_m"])
         tp = fmt_number(row["Tp_s"], 1)
         temp = fmt_number(row["temperature_C"], 1)
@@ -530,12 +568,20 @@ def print_console_summary(rows: list[dict[str, Any]]) -> None:
 def main() -> int:
     """Run the full monitor."""
     try:
+        run_time = datetime.now(LOCAL_TZ)
+        window_start, window_end = forecast_window_bounds(run_time)
         marine_data, weather_data = fetch_forecasts()
-        rows = build_rows(marine_data, weather_data)
+        all_rows = build_rows(marine_data, weather_data)
+        rows = rows_in_forecast_window(all_rows, window_start, window_end)
+        if not rows:
+            raise RuntimeError(
+                "No Open-Meteo rows available for forecast window "
+                f"{forecast_window_label(window_start, window_end)}"
+            )
         write_csv(rows)
-        good_rows = write_good_window_outputs(rows)
-        write_markdown(rows)
-        print_console_summary(rows)
+        good_rows = write_good_window_outputs(rows, run_time, window_start, window_end)
+        write_markdown(rows, run_time, window_start, window_end)
+        print_console_summary(rows, window_start, window_end)
         print(f"\nKayak favorable windows: {len(good_rows)}")
         print(f"Status file: {GOOD_WINDOW_STATUS_PATH}")
         if good_rows:
