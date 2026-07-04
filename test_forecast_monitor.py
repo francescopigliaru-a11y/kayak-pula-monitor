@@ -7,6 +7,7 @@ from forecast_monitor import (
     forecast_window_bounds,
     rows_in_forecast_window,
 )
+from nearshore_wave_model_v2 import nearshore_wave, nearshore_wave_details
 
 
 class ForecastWindowTests(unittest.TestCase):
@@ -25,6 +26,15 @@ class ForecastWindowTests(unittest.TestCase):
         self.assertEqual(len(selected), FORECAST_WINDOW_HOURS)
         self.assertEqual(selected[0]["time"], "2026-07-04T08:00")
         self.assertEqual(selected[-1]["time"], "2026-07-05T19:00")
+
+    def test_model_details_preserve_result_and_expose_floor(self) -> None:
+        details = nearshore_wave_details(0.42, 4.7, 278, wind_speed=3.8 / 3.6)
+
+        self.assertIsNotNone(details)
+        self.assertEqual(nearshore_wave(0.42, 4.7, 278, wind_speed=3.8 / 3.6), 0.05)
+        self.assertEqual(details["Hs_final_m"], 0.05)
+        self.assertLess(details["Hs_raw_m"], 0.05)
+        self.assertTrue(details["floor_applied"])
 
 
 if __name__ == "__main__":
