@@ -9,6 +9,8 @@ wave model, and writes:
 - `outputs/latest_forecast.md`
 - `outputs/good_window_status.txt`
 - `outputs/good_window.md`, only when a favorable kayak window exists
+- `outputs/model_audit.csv`
+- `outputs/model_audit.md`
 
 No API key is required.
 
@@ -32,6 +34,11 @@ The script prints a compact summary and updates the files in `outputs/`. Every
 report covers exactly `36` hourly rows, starting at `08:00` Europe/Rome on the
 day after the monitor runs. For example, a run at 18:00 on July 3 covers July 4
 at 08:00 through July 5 at 19:00.
+
+The model audit keeps the raw offshore Open-Meteo wave height alongside the
+unrounded internal model result and the displayed nearshore value. A displayed
+value of `0.05 m` can be the model's minimum floor rather than an observation of
+a 5 cm wave; check `model_floor_applied` in the audit.
 
 ## Data sources
 
@@ -95,6 +102,10 @@ The Markdown and CSV forecast use this table shape:
 
 | time | Hs_nearshore_m | Tp_s | Dir | breaking | temperature_C | wind_speed_kmh | wind_dir |
 | --- | ---: | ---: | --- | --- | ---: | ---: | --- |
+
+`latest_forecast.csv` also includes the offshore API height, API direction in
+degrees, the raw internal model height, and the floor flag. The complete model
+components are available in `model_audit.csv`.
 
 ## Notes
 
