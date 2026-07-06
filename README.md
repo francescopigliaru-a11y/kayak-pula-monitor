@@ -2,8 +2,9 @@
 
 Daily nearshore wave forecast monitor for Santa Margherita di Pula.
 
-The monitor downloads real Open-Meteo data, applies the Kayak Pula v2 nearshore
-wave model, and writes:
+The monitor downloads real Open-Meteo data and applies the provisional Kayak
+Pula v3 nearshore wave model. The unchanged v2 formula remains available only
+for comparison in the model audit. The monitor writes:
 
 - `outputs/latest_forecast.csv`
 - `outputs/latest_forecast.md`
@@ -35,10 +36,33 @@ report covers exactly `36` hourly rows, starting at `08:00` Europe/Rome on the
 day after the monitor runs. For example, a run at 18:00 on July 3 covers July 4
 at 08:00 through July 5 at 19:00.
 
-The model audit keeps the raw offshore Open-Meteo wave height alongside the
-unrounded internal model result and the displayed nearshore value. A displayed
-value of `0.05 m` can be the model's minimum floor rather than an observation of
-a 5 cm wave; check `model_floor_applied` in the audit.
+The model audit keeps the raw offshore Open-Meteo wave height, swell and
+wind-wave components, the v3 estimate and the old v2 result. V3 has no
+artificial `0.05 m` floor. The audit flags hours where a sheltered-direction
+fallback is required because a one-point model cannot resolve diffraction and
+detailed bathymetric shelter.
+
+## V3 physical model
+
+The active v3 estimate uses:
+
+- the finite-depth linear dispersion relation;
+- energy-flux shoaling and Snell refraction for waves directly approaching the
+  shoreline;
+- separate swell and wind-wave energy when supplied by Open-Meteo;
+- finite-depth, fetch-limited local wind-wave growth for winds arriving from
+  the sea;
+- the depth-limited breaking cap `Hs <= 0.78 * depth`;
+- an explicit conservative height-transmission factor of `0.50` when the
+  configured shoreline geometry does not admit a direct wave ray.
+
+The last item is a safety-oriented fallback, not a calibrated diffraction
+model. The configured local wind fetch (`20 km`) is also provisional. A proper
+2-D nearshore model would require detailed bathymetry and a spectral solver such
+as SWAN. Relevant technical references are the [SWAN scientific documentation](https://swanmodel.sourceforge.io/online_doc/swantech/node5.html),
+its [dissipation and breaking formulation](https://swanmodel.sourceforge.io/online_doc/swantech/node16.html),
+and the USACE Coastal Engineering Manual methods for wave transformation and
+fetch-limited wind-wave growth.
 
 ## Data sources
 
@@ -48,7 +72,8 @@ a 5 cm wave; check `model_floor_applied` in the audit.
 Hourly marine variables:
 
 ```text
-wave_height,wave_direction,wave_period
+wave_height,wave_direction,wave_period,wind_wave_height,wind_wave_direction,
+wind_wave_period,swell_wave_height,swell_wave_direction,swell_wave_period
 ```
 
 Hourly weather variables:
@@ -86,6 +111,15 @@ Initial alert thresholds:
 - Alerts consider the `36` hours beginning at `08:00` Europe/Rome on the day
   after the monitor runs.
 - A positive alert requires at least `2` consecutive favorable hours.
+- The wave threshold is evaluated against the unrounded v3 value; rounding to
+  two decimals cannot turn a marginally higher wave into a favorable hour.
+
+## Local observations
+
+Real local checks used for future calibration are stored in
+`observations/local_observations.csv`. Visual evidence is recorded
+qualitatively unless a scale or instrument supports a numerical wave height.
+Model replay values are kept separate from observed values.
 
 The status file contains:
 
@@ -103,12 +137,13 @@ The Markdown and CSV forecast use this table shape:
 | time | Hs_nearshore_m | Tp_s | Dir | breaking | temperature_C | wind_speed_kmh | wind_dir |
 | --- | ---: | ---: | --- | --- | ---: | ---: | --- |
 
-`latest_forecast.csv` also includes the offshore API height, API direction in
-degrees, the raw internal model height, and the floor flag. The complete model
-components are available in `model_audit.csv`.
+`latest_forecast.csv` also includes the offshore API height, API direction,
+swell and wind-wave heights, v3 transfer ratio and confidence, and the v2
+comparison. Complete diagnostics are available in `model_audit.csv`.
 
 ## Notes
 
-This is a forecast aid, not a navigation or safety system. Open-Meteo coastal
-and marine grids can differ from local nearshore conditions. Always check the
-sea directly and use conservative judgement.
+This is a forecast aid, not a navigation or safety system. V3 is physically
+more coherent than v2 but remains uncalibrated. Open-Meteo coastal and marine
+grids can differ from local nearshore conditions. Always check the sea directly
+and use conservative judgement.

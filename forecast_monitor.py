@@ -14,7 +14,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from nearshore_wave_model_v2 import nearshore_wave_details
+from nearshore_wave_model_v2 import nearshore_wave_details as nearshore_wave_v2_details
+from nearshore_wave_model_v3 import nearshore_wave_v3_details
 
 
 LAT = 38.930
@@ -23,6 +24,7 @@ DISTANCE_FROM_SHORE_M = 350
 COAST_BEARING_DEG = 65
 LOCAL_DEPTH_M = 3.5
 BEACH_SLOPE_BETA = 0.015
+LOCAL_WIND_FETCH_M = 20_000
 TIMEZONE = "Europe/Rome"
 LOCAL_TZ = ZoneInfo(TIMEZONE)
 
@@ -48,7 +50,14 @@ OUTPUT_COLUMNS = [
     "Hs_offshore_API_m",
     "Hs_nearshore_m",
     "Hs_model_raw_m",
-    "model_floor_applied",
+    "model_version",
+    "model_transfer_ratio",
+    "model_confidence",
+    "Hs_v2_display_m",
+    "v2_floor_applied",
+    "swell_height_API_m",
+    "wind_wave_height_API_m",
+    "local_wind_wave_m",
     "Tp_s",
     "Dir",
     "Dir_API_deg",
@@ -64,16 +73,25 @@ MODEL_AUDIT_COLUMNS = [
     "Tp_API_s",
     "Dir_API_deg",
     "Dir_API",
-    "theta_off_deg",
-    "Ks",
-    "Kr",
-    "atten",
-    "angle_factor",
-    "Hs_pred_m",
-    "H_wind_m",
-    "Hs_model_raw_m",
-    "Hs_nearshore_display_m",
-    "model_floor_applied",
+    "swell_height_API_m",
+    "swell_direction_API_deg",
+    "wind_wave_height_API_m",
+    "wind_wave_direction_API_deg",
+    "Hs_v2_raw_m",
+    "Hs_v2_display_m",
+    "v2_floor_applied",
+    "seaward_normal_deg",
+    "incidence_offshore_deg",
+    "Ks_v3",
+    "Kr_v3",
+    "direct_ray_v3",
+    "local_wind_wave_m",
+    "effective_wind_fetch_m",
+    "Hs_v3_raw_m",
+    "Hs_v3_display_m",
+    "v3_transfer_ratio",
+    "sheltered_fallback_used",
+    "model_confidence",
 ]
 
 
@@ -175,7 +193,11 @@ def fetch_forecasts() -> tuple[dict[str, Any], dict[str, Any]]:
     marine_params = {
         "latitude": LAT,
         "longitude": LON,
-        "hourly": "wave_height,wave_direction,wave_period",
+        "hourly": (
+            "wave_height,wave_direction,wave_period,"
+            "wind_wave_height,wind_wave_direction,wind_wave_period,"
+            "swell_wave_height,swell_wave_direction,swell_wave_period"
+        ),
         "timezone": TIMEZONE,
         "forecast_days": 5,
         "cell_selection": "sea",
@@ -198,8 +220,6 @@ def build_rows(marine_data: dict[str, Any], weather_data: dict[str, Any]) -> lis
     all_times = sorted(set(marine_rows) | set(weather_rows))
 
     rows: list[dict[str, Any]] = []
-    break_height = 0.78 * LOCAL_DEPTH_M
-
     for timestamp in all_times:
         marine = marine_rows.get(timestamp, {})
         weather = weather_rows.get(timestamp, {})
@@ -210,7 +230,8 @@ def build_rows(marine_data: dict[str, Any], weather_data: dict[str, Any]) -> lis
         wind_speed_kmh = safe_float(weather.get("wind_speed_10m"))
         wind_speed_ms = None if wind_speed_kmh is None else wind_speed_kmh / 3.6
 
-        model = nearshore_wave_details(
+        wind_dir_deg = safe_float(weather.get("wind_direction_10m"))
+        model_v2 = nearshore_wave_v2_details(
             hs_off,
             tp,
             wave_dir_deg,
@@ -218,11 +239,28 @@ def build_rows(marine_data: dict[str, Any], weather_data: dict[str, Any]) -> lis
             depth=LOCAL_DEPTH_M,
             wind_speed=wind_speed_ms or 0,
         )
+        model = nearshore_wave_v3_details(
+            hs_off,
+            tp,
+            wave_dir_deg,
+            bearing=COAST_BEARING_DEG,
+            depth=LOCAL_DEPTH_M,
+            distance_from_shore_m=DISTANCE_FROM_SHORE_M,
+            beach_slope_beta=BEACH_SLOPE_BETA,
+            wind_speed=wind_speed_ms or 0,
+            wind_direction=wind_dir_deg,
+            wind_fetch_m=LOCAL_WIND_FETCH_M,
+            swell_height=safe_float(marine.get("swell_wave_height")),
+            swell_period=safe_float(marine.get("swell_wave_period")),
+            swell_direction=safe_float(marine.get("swell_wave_direction")),
+            wind_wave_height=safe_float(marine.get("wind_wave_height")),
+            wind_wave_period=safe_float(marine.get("wind_wave_period")),
+            wind_wave_direction=safe_float(marine.get("wind_wave_direction")),
+        )
         hs_nearshore = None if model is None else model["Hs_final_m"]
 
-        wind_dir_deg = safe_float(weather.get("wind_direction_10m"))
         temperature = safe_float(weather.get("temperature_2m"))
-        breaking = "true" if hs_nearshore is not None and hs_nearshore >= break_height else "false"
+        breaking = "true" if model is not None and model["breaking"] else "false"
 
         rows.append(
             {
@@ -235,8 +273,15 @@ def build_rows(marine_data: dict[str, Any], weather_data: dict[str, Any]) -> lis
                 "wind_speed_kmh": wind_speed_kmh,
                 "wind_dir": cardinal_direction(wind_dir_deg),
                 "_model": model,
+                "_model_v2": model_v2,
                 "_wave_height_offshore_m": hs_off,
                 "_wave_direction_deg": wave_dir_deg,
+                "_swell_height_m": safe_float(marine.get("swell_wave_height")),
+                "_swell_period_s": safe_float(marine.get("swell_wave_period")),
+                "_swell_direction_deg": safe_float(marine.get("swell_wave_direction")),
+                "_wind_wave_height_m": safe_float(marine.get("wind_wave_height")),
+                "_wind_wave_period_s": safe_float(marine.get("wind_wave_period")),
+                "_wind_wave_direction_deg": safe_float(marine.get("wind_wave_direction")),
                 "_wind_gusts_kmh": safe_float(weather.get("wind_gusts_10m")),
             }
         )
@@ -257,7 +302,16 @@ def write_csv(rows: list[dict[str, Any]]) -> None:
                     "Hs_offshore_API_m": fmt_number(row["_wave_height_offshore_m"]),
                     "Hs_nearshore_m": fmt_number(row["Hs_nearshore_m"]),
                     "Hs_model_raw_m": fmt_number((row["_model"] or {}).get("Hs_raw_m"), 4),
-                    "model_floor_applied": str(bool((row["_model"] or {}).get("floor_applied"))).lower(),
+                    "model_version": (row["_model"] or {}).get("model_version", ""),
+                    "model_transfer_ratio": fmt_number((row["_model"] or {}).get("transfer_ratio"), 3),
+                    "model_confidence": (row["_model"] or {}).get("confidence", ""),
+                    "Hs_v2_display_m": fmt_number((row["_model_v2"] or {}).get("Hs_final_m")),
+                    "v2_floor_applied": str(bool((row["_model_v2"] or {}).get("floor_applied"))).lower(),
+                    "swell_height_API_m": fmt_number(row["_swell_height_m"]),
+                    "wind_wave_height_API_m": fmt_number(row["_wind_wave_height_m"]),
+                    "local_wind_wave_m": fmt_number(
+                        ((row["_model"] or {}).get("local_wind_wave") or {}).get("height_m")
+                    ),
                     "Tp_s": fmt_number(row["Tp_s"], 1),
                     "Dir": row["Dir"],
                     "Dir_API_deg": fmt_number(row["_wave_direction_deg"], 0),
@@ -284,23 +338,41 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def audit_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarize the raw API wave and the unchanged model transformation."""
+    """Summarize offshore input and the v2/v3 transformations."""
     offshore = [row["_wave_height_offshore_m"] for row in rows if row["_wave_height_offshore_m"] is not None]
-    raw_model = [
+    raw_v3 = [
         row["_model"]["Hs_raw_m"]
         for row in rows
         if row.get("_model") is not None
     ]
+    raw_v2 = [
+        row["_model_v2"]["Hs_raw_m"]
+        for row in rows
+        if row.get("_model_v2") is not None
+    ]
     displayed = [row["Hs_nearshore_m"] for row in rows if row["Hs_nearshore_m"] is not None]
-    floor_hits = sum(bool((row.get("_model") or {}).get("floor_applied")) for row in rows)
+    ratios = [
+        row["_model"]["transfer_ratio"]
+        for row in rows
+        if row.get("_model") is not None and row["_model"].get("transfer_ratio") is not None
+    ]
+    v2_floor_hits = sum(bool((row.get("_model_v2") or {}).get("floor_applied")) for row in rows)
+    sheltered_hits = sum(
+        bool((row.get("_model") or {}).get("sheltered_fallback_used")) for row in rows
+    )
     return {
         "offshore_min": min(offshore) if offshore else None,
         "offshore_max": max(offshore) if offshore else None,
-        "raw_min": min(raw_model) if raw_model else None,
-        "raw_max": max(raw_model) if raw_model else None,
+        "raw_min": min(raw_v3) if raw_v3 else None,
+        "raw_max": max(raw_v3) if raw_v3 else None,
+        "v2_raw_min": min(raw_v2) if raw_v2 else None,
+        "v2_raw_max": max(raw_v2) if raw_v2 else None,
         "displayed_min": min(displayed) if displayed else None,
         "displayed_max": max(displayed) if displayed else None,
-        "floor_hits": floor_hits,
+        "ratio_min": min(ratios) if ratios else None,
+        "ratio_max": max(ratios) if ratios else None,
+        "v2_floor_hits": v2_floor_hits,
+        "sheltered_hits": sheltered_hits,
         "row_count": len(rows),
     }
 
@@ -312,7 +384,7 @@ def write_model_audit(
     window_start: datetime,
     window_end: datetime,
 ) -> None:
-    """Write detailed API-to-nearshore model diagnostics."""
+    """Write detailed API-to-nearshore v2/v3 diagnostics."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary = audit_summary(rows)
     grid_lat = safe_float(marine_data.get("latitude"))
@@ -326,6 +398,9 @@ def write_model_audit(
         writer.writeheader()
         for row in rows:
             model = row.get("_model") or {}
+            model_v2 = row.get("_model_v2") or {}
+            total_component = model.get("total_component") or {}
+            local_wind = model.get("local_wind_wave") or {}
             writer.writerow(
                 {
                     "time": row["time"],
@@ -333,21 +408,30 @@ def write_model_audit(
                     "Tp_API_s": fmt_number(row["Tp_s"], 1),
                     "Dir_API_deg": fmt_number(row["_wave_direction_deg"], 0),
                     "Dir_API": row["Dir"],
-                    "theta_off_deg": fmt_number(model.get("theta_off_deg"), 1),
-                    "Ks": fmt_number(model.get("Ks"), 3),
-                    "Kr": fmt_number(model.get("Kr"), 3),
-                    "atten": fmt_number(model.get("atten"), 4),
-                    "angle_factor": fmt_number(model.get("angle_factor"), 3),
-                    "Hs_pred_m": fmt_number(model.get("Hs_pred_m"), 4),
-                    "H_wind_m": fmt_number(model.get("H_wind_m"), 4),
-                    "Hs_model_raw_m": fmt_number(model.get("Hs_raw_m"), 4),
-                    "Hs_nearshore_display_m": fmt_number(row["Hs_nearshore_m"]),
-                    "model_floor_applied": str(bool(model.get("floor_applied"))).lower(),
+                    "swell_height_API_m": fmt_number(row["_swell_height_m"]),
+                    "swell_direction_API_deg": fmt_number(row["_swell_direction_deg"], 0),
+                    "wind_wave_height_API_m": fmt_number(row["_wind_wave_height_m"]),
+                    "wind_wave_direction_API_deg": fmt_number(row["_wind_wave_direction_deg"], 0),
+                    "Hs_v2_raw_m": fmt_number(model_v2.get("Hs_raw_m"), 4),
+                    "Hs_v2_display_m": fmt_number(model_v2.get("Hs_final_m")),
+                    "v2_floor_applied": str(bool(model_v2.get("floor_applied"))).lower(),
+                    "seaward_normal_deg": fmt_number(model.get("seaward_normal_deg"), 0),
+                    "incidence_offshore_deg": fmt_number(total_component.get("incidence_offshore_deg"), 1),
+                    "Ks_v3": fmt_number(total_component.get("Ks"), 3),
+                    "Kr_v3": fmt_number(total_component.get("Kr"), 3),
+                    "direct_ray_v3": str(bool(total_component.get("direct_ray"))).lower(),
+                    "local_wind_wave_m": fmt_number(local_wind.get("height_m"), 4),
+                    "effective_wind_fetch_m": fmt_number(local_wind.get("effective_fetch_m"), 0),
+                    "Hs_v3_raw_m": fmt_number(model.get("Hs_raw_m"), 4),
+                    "Hs_v3_display_m": fmt_number(row["Hs_nearshore_m"]),
+                    "v3_transfer_ratio": fmt_number(model.get("transfer_ratio"), 3),
+                    "sheltered_fallback_used": str(bool(model.get("sheltered_fallback_used"))).lower(),
+                    "model_confidence": model.get("confidence", ""),
                 }
             )
 
     lines = [
-        "# Kayak Pula model audit",
+        "# Kayak Pula v3 model audit",
         "",
         f"Generated: {run_time.isoformat(timespec='seconds')}",
         f"Forecast window: {forecast_window_label(window_start, window_end)}",
@@ -363,36 +447,45 @@ def write_model_audit(
     lines.extend(
         [
             "- Wave direction is the direction waves come from.",
+            "- Active model: v3 provisional; v2 is retained only for comparison.",
             "",
             "## Transformation summary",
             "",
             f"- Offshore API Hs range: {fmt_number(summary['offshore_min'])}-{fmt_number(summary['offshore_max'])} m",
-            f"- Model raw Hs range before the 0.05 m floor: {fmt_number(summary['raw_min'], 4)}-{fmt_number(summary['raw_max'], 4)} m",
-            f"- Displayed nearshore Hs range: {fmt_number(summary['displayed_min'])}-{fmt_number(summary['displayed_max'])} m",
-            f"- 0.05 m display floor applied: {summary['floor_hits']}/{summary['row_count']} hours",
+            f"- V3 nearshore Hs range: {fmt_number(summary['displayed_min'])}-{fmt_number(summary['displayed_max'])} m",
+            f"- V3 nearshore/offshore height ratio: {fmt_number(summary['ratio_min'], 3)}-{fmt_number(summary['ratio_max'], 3)}",
+            f"- Sheltered-direction fallback used: {summary['sheltered_hits']}/{summary['row_count']} hours",
+            f"- V2 raw Hs range: {fmt_number(summary['v2_raw_min'], 4)}-{fmt_number(summary['v2_raw_max'], 4)} m",
+            f"- V2 0.05 m floor would apply: {summary['v2_floor_hits']}/{summary['row_count']} hours",
             "",
-            "The 0.05 m value is a display floor when `model_floor_applied=true`; it is not an API observation of a 5 cm wave.",
+            "V3 has no artificial 0.05 m floor. It uses linear shoaling/refraction, component energy and a finite-fetch local wind-sea estimate.",
+            "When `sheltered_fallback_used=true`, detailed diffraction and bathymetric shelter remain unresolved; the estimate is conservative and low-confidence.",
             "",
             "## First 12 hourly diagnostics",
             "",
-            "| time | Hs_API_m | Dir_API_deg | Tp_s | theta_deg | atten | angle_factor | Hs_model_raw_m | Hs_display_m | floor |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            "| time | Hs_API | swell | wind-wave | incidence | Ks | Kr | local wind | Hs_v2 | Hs_v3 | ratio | fallback |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     for row in rows[:12]:
         model = row.get("_model") or {}
+        model_v2 = row.get("_model_v2") or {}
+        total_component = model.get("total_component") or {}
+        local_wind = model.get("local_wind_wave") or {}
         lines.append(
-            "| {time} | {api} | {direction} | {tp} | {theta} | {atten} | {angle} | {raw} | {displayed} | {floor} |".format(
+            "| {time} | {api} | {swell} | {wind_wave} | {incidence} | {ks} | {kr} | {local_wind} | {v2} | {v3} | {ratio} | {fallback} |".format(
                 time=row["time"],
                 api=fmt_number(row["_wave_height_offshore_m"]),
-                direction=fmt_number(row["_wave_direction_deg"], 0),
-                tp=fmt_number(row["Tp_s"], 1),
-                theta=fmt_number(model.get("theta_off_deg"), 1),
-                atten=fmt_number(model.get("atten"), 4),
-                angle=fmt_number(model.get("angle_factor"), 3),
-                raw=fmt_number(model.get("Hs_raw_m"), 4),
-                displayed=fmt_number(row["Hs_nearshore_m"]),
-                floor=str(bool(model.get("floor_applied"))).lower(),
+                swell=fmt_number(row["_swell_height_m"]),
+                wind_wave=fmt_number(row["_wind_wave_height_m"]),
+                incidence=fmt_number(total_component.get("incidence_offshore_deg"), 1),
+                ks=fmt_number(total_component.get("Ks"), 3),
+                kr=fmt_number(total_component.get("Kr"), 3),
+                local_wind=fmt_number(local_wind.get("height_m"), 3),
+                v2=fmt_number(model_v2.get("Hs_final_m")),
+                v3=fmt_number(row["Hs_nearshore_m"]),
+                ratio=fmt_number(model.get("transfer_ratio"), 3),
+                fallback=str(bool(model.get("sheltered_fallback_used"))).lower(),
             )
         )
     MODEL_AUDIT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -454,7 +547,9 @@ def forecast_window_label(start: datetime, end: datetime) -> str:
 
 def is_good_kayak_window(row: dict[str, Any]) -> bool:
     """Apply the positive kayak-window thresholds."""
-    hs = row.get("Hs_nearshore_m")
+    hs = (row.get("_model") or {}).get("Hs_raw_m")
+    if hs is None:
+        hs = row.get("Hs_nearshore_m")
     wind = row.get("wind_speed_kmh")
     return (
         hs is not None
@@ -575,11 +670,13 @@ def write_good_window_outputs(
         f"- Ore favorevoli trovate nell'intervallo: {len(qualified_rows)}",
         f"- Migliore fascia oraria consigliata: {window_label(best_window)}",
         f"- Onda offshore Open-Meteo nell'intervallo: {fmt_number(model_audit['offshore_min'])}-{fmt_number(model_audit['offshore_max'])} m",
-        f"- Limite minimo 0.05 m applicato dal modello: {model_audit['floor_hits']}/{model_audit['row_count']} ore",
+        f"- Stima v3 sotto costa nell'intervallo: {fmt_number(model_audit['displayed_min'])}-{fmt_number(model_audit['displayed_max'])} m",
+        f"- Direzioni riparate trattate con limite prudenziale: {model_audit['sheltered_hits']}/{model_audit['row_count']} ore",
         f"- Soglie: Hs_nearshore_m <= {GOOD_HS_THRESHOLD_M:.2f} m, wind_speed_kmh <= {GOOD_WIND_THRESHOLD_KMH:.0f}, breaking non true",
+        "- La soglia dell'onda e applicata al valore v3 non arrotondato.",
         f"- Richiesta minima: almeno {MIN_CONSECUTIVE_GOOD_HOURS} ore consecutive.",
         "- Controllare sempre condizioni locali, vento reale, correnti e capacità personali.",
-        "- Il valore 0.05 m puo essere il minimo visualizzato dal modello, non una misura diretta dell'onda.",
+        "- Modello v3 provvisorio e non calibrato con una boa locale: non e una certificazione di sicurezza.",
         "",
         "## Ore favorevoli",
         "",
@@ -649,9 +746,12 @@ def write_markdown(
         f"- Forecast window: {forecast_window_label(window_start, window_end)}",
         f"- Forecast rows: {summary['count']}",
         f"- Rows with nearshore estimate: {summary['valid_count']}",
+        "- Active model: Kayak Pula v3 provisional",
         f"- Offshore Open-Meteo Hs range: {fmt_number(model_audit['offshore_min'])}-{fmt_number(model_audit['offshore_max'])} m",
-        f"- Raw model Hs range before display floor: {fmt_number(model_audit['raw_min'], 4)}-{fmt_number(model_audit['raw_max'], 4)} m",
-        f"- 0.05 m display floor applied: {model_audit['floor_hits']}/{model_audit['row_count']} hours",
+        f"- V3 nearshore Hs range: {fmt_number(model_audit['displayed_min'])}-{fmt_number(model_audit['displayed_max'])} m",
+        f"- V3 nearshore/offshore height ratio: {fmt_number(model_audit['ratio_min'], 3)}-{fmt_number(model_audit['ratio_max'], 3)}",
+        f"- Sheltered-direction fallback used: {model_audit['sheltered_hits']}/{model_audit['row_count']} hours",
+        f"- V2 0.05 m floor would have applied: {model_audit['v2_floor_hits']}/{model_audit['row_count']} hours",
     ]
 
     if max_row:

@@ -1,0 +1,2 @@
+observed_at,location,source,observed_state,direction_user_estimate,Hs_observed_m,offshore_API_m,v2_model_m,v3_replay_model_m,photo_filename,notes
+2026-07-05T11:59:15+02:00,Santa Margherita di Pula project site,user photograph,not flat / v2 forecast contradicted,SW,,0.36,0.05,0.21,WhatsApp Image 2026-07-05 at 11.59.15 (1).jpeg,"Visual observation only; no scale for a numerical Hs. V3 replay uses the forecast inputs retained in the model audit."
