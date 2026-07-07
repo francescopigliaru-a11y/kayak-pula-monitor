@@ -51,6 +51,21 @@ class ForecastWindowTests(unittest.TestCase):
 
         self.assertAlmostEqual(omega**2, 9.81 * k * math.tanh(k * depth), places=10)
 
+    def test_v3_handles_very_short_wind_wave_period_without_overflow(self) -> None:
+        details = nearshore_wave_v3_details(
+            0.26,
+            3.3,
+            275,
+            bearing=65,
+            depth=3.5,
+            wind_wave_height=0.02,
+            wind_wave_period=0.15,
+            wind_wave_direction=10,
+        )
+
+        self.assertIsNotNone(details)
+        self.assertGreaterEqual(details["Hs_final_m"], 0.0)
+
     def test_v3_angle_difference_wraps_at_north(self) -> None:
         self.assertEqual(signed_angle_difference(350, 10), -20)
         self.assertEqual(signed_angle_difference(10, 350), 20)

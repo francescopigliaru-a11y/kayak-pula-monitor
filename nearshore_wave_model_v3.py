@@ -61,7 +61,11 @@ def wave_kinematics(period_s: float, depth_m: float) -> dict[str, float]:
     k = wavenumber(period_s, depth_m)
     kh = k * depth_m
     phase_speed = omega / k
-    group_factor = 0.5 * (1.0 + (2.0 * kh) / math.sinh(2.0 * kh))
+    two_kh = 2.0 * kh
+    # x / sinh(x) tends to zero in deep water. Evaluating sinh directly for
+    # very short wind-wave periods can overflow even though the limit is simple.
+    depth_term = 0.0 if two_kh > 50.0 else two_kh / math.sinh(two_kh)
+    group_factor = 0.5 * (1.0 + depth_term)
     group_speed = group_factor * phase_speed
     return {
         "k_local_1_m": k,
